@@ -1,0 +1,9 @@
+.vercel
+node_modules/
+dist/
+.env*
+*.pyc
+__pycache__/
+teardown_vps.py
+deploy_c2.py
+.DS_Store
