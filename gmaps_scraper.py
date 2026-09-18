@@ -5,20 +5,12 @@ import urllib.parse
 import re
 import time
 
-# Regex patterns to hunt for data
 EMAIL_REGEX = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
-# Matches standard phone formats like (123) 456-7890 or 123-456-7890
 PHONE_REGEX = r"\(?\b[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b"
-# Matches patterns like "Founder John Doe" or "John Doe, Founder"
 OWNER_REGEX_1 = r'\b(?:Founder|Owner|CEO)\b[\s:]+([A-Z][a-z]{2,} [A-Z][a-z]{2,})\b'
 OWNER_REGEX_2 = r'\b([A-Z][a-z]{2,} [A-Z][a-z]{2,})\b[\s,]+(?:is the\s+)?(?:Founder|Owner|CEO)\b'
 
 async def extract_website_details(context, website_url):
-    """
-    Visits a given website and aggressively hunts for ALL possible details:
-    Emails, Phone Numbers, and Owner/Founder names!
-    If it can't find them on the homepage, it actively seeks out Contact/About pages.
-    """
     details = {'email': '', 'phone': '', 'owner': ''}
     
     if not website_url or "http" not in website_url:
@@ -29,24 +21,20 @@ async def extract_website_details(context, website_url):
             
     try:
         page = await context.new_page()
-        # Block images/CSS for blazing fast loading
+        # block assets for speed
         await page.route("**/*", lambda route: route.continue_() if route.request.resource_type in ["document", "script"] else route.abort())
         
         async def get_details_from_page():
             content = await page.content()
             
-            # 1. Hunt for Emails
             emails = set(re.findall(EMAIL_REGEX, content))
             emails = {e for e in emails if not e.endswith(('png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'js', 'css')) 
                       and 'sentry' not in e.lower() 
                       and 'react' not in e.lower() 
                       and not re.search(r'@[0-9\.]+$', e)}
                       
-            # 2. Hunt for Phone Numbers
             phones = set(re.findall(PHONE_REGEX, content))
             
-            # 3. Hunt for Owner/Founder names in the raw text
-            # Strip out HTML tags first so we search clean text
             clean_text = re.sub(r'<[^>]+>', ' ', content)
             owners = set()
             owners.update(re.findall(OWNER_REGEX_1, clean_text))
@@ -54,19 +42,17 @@ async def extract_website_details(context, website_url):
             
             return emails, phones, owners
                     
-        # Step 1: Scan the homepage
         await page.goto(website_url, timeout=10000, wait_until="domcontentloaded")
         found_emails, found_phones, found_owners = await get_details_from_page()
         
-        # Step 2: Try Harder - If missing ANY details, aggressively hunt through inner pages
+        # search contact pages if missing data
         if not found_emails or not found_phones or not found_owners:
-            print(f"         [Deep Scanning A-Z: Hunting deeper in inner pages for missing details...]")
             hrefs = await page.evaluate('''() => {
                 const links = Array.from(document.querySelectorAll('a'));
                 return links.map(a => a.href).filter(href => href.toLowerCase().includes('contact') || href.toLowerCase().includes('about') || href.toLowerCase().includes('team'));
             }''')
             
-            hrefs = list(set(hrefs))[:4] # Increased depth to 4 pages for A-Z deep scan!
+            hrefs = list(set(hrefs))[:4]
             
             for href in hrefs:
                 try:
@@ -78,7 +64,7 @@ async def extract_website_details(context, website_url):
                     found_owners.update(more_owners)
                     
                     if found_emails and found_phones and found_owners:
-                        break # We found what we need!
+                        break
                 except Exception:
                     continue
                     
@@ -96,7 +82,7 @@ async def extract_website_details(context, website_url):
     return details
 
 async def scrape_google_maps(keyword, max_results):
-    print(f"Starting aggressive scraper for: '{keyword}', looking for {max_results} leads...")
+    print(f"Scraping '{keyword}' for {max_results} leads...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(viewport={'width': 1280, 'height': 800})
@@ -105,15 +91,13 @@ async def scrape_google_maps(keyword, max_results):
         encoded_keyword = urllib.parse.quote_plus(keyword)
         search_url = f"https://www.google.com/maps/search/{encoded_keyword}"
         
-        print(f"Opening Google Maps directly to search results...")
         await page.goto(search_url)
+        print("Waiting for results...")
         
-        print("Waiting for results to load...")
         try:
             await page.wait_for_selector('div[role="feed"]', timeout=20000)
             await page.wait_for_timeout(3000) 
         except Exception:
-            print("Could not find the results list immediately. Checking for consent popups...")
             try:
                 accept_button = page.locator('button:has-text("Accept all")')
                 if await accept_button.count() > 0:
@@ -124,8 +108,6 @@ async def scrape_google_maps(keyword, max_results):
                 pass
         
         scraped_data = []
-        print("Scrolling through results...")
-        
         count = 0
         previously_processed = set()
         feed_locator = page.locator('div[role="feed"]')
@@ -154,8 +136,6 @@ async def scrape_google_maps(keyword, max_results):
                         await page.wait_for_timeout(500)
                         await listing.evaluate("node => node.click()")
                         
-                        print(f"[{count+1}/{max_results}] Opening listing...")
-                        # SMART WAIT
                         try: await page.wait_for_selector('h1.DUwDvf', timeout=5000)
                         except: await page.wait_for_timeout(2000)
                         
@@ -167,7 +147,6 @@ async def scrape_google_maps(keyword, max_results):
                         city = ""
                         state = ""
                         zip_code = ""
-                        
                         owner = ""
                         
                         try:
@@ -198,20 +177,16 @@ async def scrape_google_maps(keyword, max_results):
                                 website = await website_locator.first.inner_text()
                         except Exception: pass
                         
-                        # Aggressively scan website for missing details!
                         if website:
-                            print(f"      -> Deep scanning {website} for hidden details...")
                             web_details = await extract_website_details(context, website)
                             email = web_details['email']
                             owner = web_details['owner']
                             
-                            # If Google Maps didn't list a phone number, steal it from their website!
                             if not phone and web_details['phone']:
                                 phone = web_details['phone']
-                                print(f"         [Rescued missing phone number from website!]")
                         
                         email_status = "Yes" if email else "No"
-                        print(f"Found: {name} | Owner: {owner if owner else 'None'} | Email: {email if email else 'None'}")
+                        print(f"[{count+1}/{max_results}] Found: {name}")
                         
                         scraped_data.append({
                             'Company Name': name,
@@ -225,7 +200,7 @@ async def scrape_google_maps(keyword, max_results):
                         count += 1
                         
                     except Exception as e:
-                        print(f"Error scraping a listing: {e}")
+                        pass
                         
                 if not new_listings_found or count >= max_results:
                     try:
@@ -234,22 +209,19 @@ async def scrape_google_maps(keyword, max_results):
                         
                         end_text = page.locator('text="You\'ve reached the end of the list."')
                         if await end_text.count() > 0:
-                            print("Reached the end of the search results.")
                             break
                     except Exception:
                         pass
             except Exception as e:
-                 print(f"Loop error: {e}")
                  break
             
-        print(f"Finished scraping. Collected {len(scraped_data)} leads.")
+        print(f"Finished scraping {len(scraped_data)} leads.")
         await browser.close()
             
         if scraped_data:
             filtered_data = [d for d in scraped_data if d.get('Company Name')]
             
             if not filtered_data:
-                print("Only blank data was scraped.")
                 return
 
             df = pd.DataFrame(filtered_data)
@@ -267,27 +239,21 @@ async def scrape_google_maps(keyword, max_results):
                         col_letter = get_column_letter(idx + 1)
                         worksheet.column_dimensions[col_letter].width = max_len
 
-                print("\nSUCCESS: Saved leads.csv and elegantly formatted leads.xlsx!")
+                print("Saved to leads.csv and leads.xlsx")
             except Exception as e:
-                print("\nERROR: Could not save the files because they are currently open in another program (like Excel).")
-                print("Please close leads.csv and leads.xlsx and run the scraper again!")
-                
+                print("Error saving files. Make sure Excel is closed.")
                 backup_name = f'leads_backup_{int(time.time())}.csv'
                 try:
                     df.to_csv(backup_name, index=False)
-                    print(f"I saved a backup for you as {backup_name} so you don't lose the data!")
+                    print(f"Saved backup to {backup_name}")
                 except Exception:
                     pass
-                
-        else:
-            print("No data was scraped.")
 
 if __name__ == "__main__":
-    keyword = input("Enter keyword to search (e.g., 'Plumbers in Chicago'): ")
+    keyword = input("Search keyword (e.g., 'Plumbers in Chicago'): ")
     try:
-        max_results = int(input("How many leads do you want to scrape? (e.g., 50): "))
+        max_results = int(input("Max leads: "))
     except ValueError:
-        print("Invalid number. Defaulting to 10.")
         max_results = 10
         
     asyncio.run(scrape_google_maps(keyword, max_results))
